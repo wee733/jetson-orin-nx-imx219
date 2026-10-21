@@ -4,7 +4,7 @@
 
 ## 偏紫修正
 
-使用带 GStreamer 的系统 OpenCV 和 numpy。`imx219.py` 默认加载附带的 **white_balance.json**：
+使用带 GStreamer 的系统 OpenCV 和 numpy。**不需要先校准**，`imx219.py` 默认加载我们已经实测的 **white_balance.json**，保存的图像同样经过修正：
 
 ```bash
 python3 imx219.py
@@ -21,7 +21,21 @@ python3 imx219.py --raw-color  # 关闭 LUT，自动白平衡，对照原图
 
 修正采用 ISP 输出后的逐通道 LUT，只在本程序中生效。这是当时室内光照的白点修正，不是厂家通用 ISP；换光源后重新标定。
 
-## 重新标定
+## 交给算法
+
+```python
+from imx219 import IMX219
+
+with IMX219() as camera:
+    for _ in range(60):
+        camera.read()  # 预热
+    ok, bgr = camera.read()  # 已加载同一份参数并做颜色修正
+    if not ok:
+        raise RuntimeError("相机读取失败")
+    # 将 bgr 交给算法；当前输出为 960×540×3
+```
+
+## 可选：重新标定
 
 放好白纸，ROI 按 960×540 输出填写，避开阴影、反光和边缘：
 
