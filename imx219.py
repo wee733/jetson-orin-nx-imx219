@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: MIT
-"""Waveshare Pi5-IMX219-77 capture; auto exposure/WB by default, optional scene controls."""
+"""IMX219 capture with the bundled indoor white-paper correction; --raw-color disables it."""
 import argparse,time,json
 from pathlib import Path
 import cv2
 import numpy as np
 from collections import deque
 p=argparse.ArgumentParser()
-p.add_argument('--wb',choices=['auto','indoor','daylight'],default='auto')
+p.add_argument('--wb',choices=['auto','indoor','daylight'],help='indoor means Argus incandescent/wbmode=2')
 p.add_argument('--shutter-us',type=float,help='Fixed exposure in microseconds; translated to Argus nanoseconds')
 p.add_argument('--max-exposure-us',type=float,help='Upper exposure limit in microseconds; keeps automatic exposure')
 p.add_argument('--gain',type=float,help='Fixed sensor analog gain multiplier')
@@ -15,7 +15,8 @@ p.add_argument('--isp-gain',type=float,help='Fixed ISP digital gain multiplier')
 p.add_argument('--headless',action='store_true')
 p.add_argument('--frames',type=int,default=0,help='0: run until Q or Ctrl-C')
 p.add_argument('--save',type=Path)
-p.add_argument('--white-profile',type=Path,help='Apply a scene-specific BGR LUT profile')
+p.add_argument('--white-profile',type=Path,help='White balance JSON; defaults to bundled white_balance.json')
+p.add_argument('--raw-color',action='store_true',help='Disable the application LUT and use auto WB unless --wb is set')
 p.add_argument('--calibrate-white',type=Path,help='Save a white-reference profile after convergence')
 p.add_argument('--ev',type=float,help='Exposure compensation in stops; defaults to saved profile or 0')
 p.add_argument('--roi',type=int,nargs=4,default=[480,180,640,320],metavar=('X0','Y0','X1','Y1'))
@@ -23,14 +24,19 @@ a=p.parse_args()
 if a.frames<0: p.error('--frames must be nonnegative')
 if a.calibrate_white and a.white_profile: p.error('Use calibration or correction, not both')
 if a.calibrate_white and a.frames and a.frames<90: p.error('Calibration needs at least 90 frames')
+if a.raw_color and a.white_profile:p.error('Choose --raw-color or --white-profile')
+if not a.calibrate_white and not a.raw_color and a.white_profile is None:
+ a.white_profile=Path(__file__).with_name('white_balance.json')
 profile=None;lut=None;correction_ms=deque(maxlen=300);reference=deque(maxlen=30);reference_clipping=deque(maxlen=30)
 if a.white_profile:
  profile=json.loads(a.white_profile.read_text())
  if profile.get('output_resolution')!=[960,540]:raise SystemExit('Profile output resolution differs from 960x540')
+ if a.wb is None:a.wb=profile['wb_preset']
  if profile['wb_preset']!=a.wb:raise SystemExit('White profile requires --wb '+profile['wb_preset'])
  gains=np.asarray(profile['gains_bgr'],np.float32)
  if gains.shape!=(3,) or not np.isfinite(gains).all() or not ((gains>=0.25)&(gains<=4)).all():raise SystemExit('Invalid white profile gains')
  lut=np.clip(np.arange(256,dtype=np.float32)[:,None]*gains[None,:],0,255).round().astype(np.uint8).reshape(256,1,3)
+if a.wb is None:a.wb='indoor' if a.calibrate_white else 'auto'
 ev=a.ev if a.ev is not None else (profile.get('exposure_compensation_ev',0.0) if profile else 0.0)
 if not -2<=ev<=2:raise SystemExit('Exposure compensation must be between -2 and 2')
 controls={k:getattr(a,k) for k in ('shutter_us','max_exposure_us','gain','max_gain','isp_gain') if getattr(a,k) is not None}

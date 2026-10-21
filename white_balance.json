@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "camera": "Waveshare Pi5-IMX219-77",
+  "wb_preset": "indoor",
+  "ROI": [
+    320,
+    200,
+    440,
+    280
+  ],
+  "exposure_compensation_ev": -0.7,
+  "median_bgr": [
+    214.0,
+    186.0,
+    158.0
+  ],
+  "gains_bgr": [
+    0.8691588785046729,
+    1.0,
+    1.1772151898734178
+  ],
+  "output_resolution": [
+    960,
+    540
+  ],
+  "scope": "Current lighting only; white neutrality correction after ISP, not colorimetric/lens-shading calibration",
+  "capture_controls": {}
+}
