@@ -1,6 +1,6 @@
 # Jetson Orin NX + Waveshare IMX219
 
-实测：Orin NX 16GB，Ubuntu 24.04 / JetPack 7.2.1 / L4T R39.2.1，Pi5-IMX219-77（79.3°），达妙 V2 的 CSI0。使用系统 `nv_imx219` 驱动和原有 NITO。
+实测：Orin NX 16GB，Ubuntu 24.04 / JetPack 7.2.1 / L4T R39.2.1，Pi5-IMX219-77（79.3°），CSI0接入。使用系统 `nv_imx219` 驱动和原有 NITO。
 
 ## 偏紫修正
 
@@ -21,19 +21,6 @@ python3 imx219.py --raw-color  # 关闭 LUT，自动白平衡，对照原图
 
 修正采用 ISP 输出后的逐通道 LUT，只在本程序中生效。这是当时室内光照的白点修正，不是厂家通用 ISP；换光源后重新标定。
 
-## 交给算法
-
-```python
-from imx219 import IMX219
-
-with IMX219() as camera:
-    for _ in range(60):
-        camera.read()  # 预热
-    ok, bgr = camera.read()  # 已加载同一份参数并做颜色修正
-    if not ok:
-        raise RuntimeError("相机读取失败")
-    # 将 bgr 交给算法；当前输出为 960×540×3
-```
 
 ## 可选：重新标定
 
