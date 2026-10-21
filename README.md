@@ -1,30 +1,35 @@
 # Jetson Orin NX + Waveshare IMX219
 
-实测：Orin NX 16GB，Ubuntu 24.04 / JetPack 7.2.1 / L4T R39.2.1，Pi5-IMX219-77（79.3°），CSI0接入。使用系统 `nv_imx219` 驱动和原有 NITO。
+**English** | [简体中文](README.zh-CN.md)
 
-## 偏紫修正
+Enable IMX219 capture and apply the measured correction for a purple color cast. **The bundled correction is enabled by default; calibration is optional.**
 
-使用带 GStreamer 的系统 OpenCV 和 numpy。**不需要先校准**，`imx219.py` 默认加载我们已经实测的 **white_balance.json**，保存的图像同样经过修正：
+Tested on Orin NX 16GB, Ubuntu 24.04 / JetPack 7.2.1 / L4T R39.2.1, Waveshare **Pi5-IMX219-77 (79.3°)**, and a CSI0 connection. Uses the installed `nv_imx219` driver and original NITO.
+
+## Capture with color correction
+
+Requires system OpenCV with GStreamer support and NumPy. Run from the repository directory:
 
 ```bash
 python3 imx219.py
 python3 imx219.py --headless --frames 180 --save corrected.jpg
-python3 imx219.py --raw-color  # 关闭 LUT，自动白平衡，对照原图
+python3 imx219.py --raw-color  # Compare without the LUT, using auto white balance
 ```
 
-| 参数 | 本机第二次白纸标定结果 |
+Preview, saved images, and the Python API all apply `white_balance.json`.
+
+| Setting | Measured indoor profile |
 |---|---|
-| 白平衡 | `wbmode=2` 白炽灯，脚本选项为 `indoor` |
-| 曝光补偿 | `-0.7 EV`，快门/增益仍自动 |
-| BGR 增益 | `[0.8691588785, 1, 1.1772151899]` |
-| 输入 / 输出 | 1920×1080@30 / BGR 960×540 |
+| White balance | Argus `wbmode=2` (incandescent), named `indoor` in this script |
+| Exposure compensation | `-0.7 EV`; shutter and gain remain automatic |
+| BGR gains | `[0.8691588785, 1, 1.1772151899]` |
+| Sensor input / application output | 1920×1080 at 30 fps / 960×540 BGR |
 
-修正采用 ISP 输出后的逐通道 LUT，只在本程序中生效。这是当时室内光照的白点修正，不是厂家通用 ISP；换光源后重新标定。
+The correction is a per-channel LUT applied after the ISP. It reproduces our indoor white-reference adjustment, not a universal vendor ISP calibration. Different lighting may need a new profile. Other applications do not inherit this correction.
 
+## Optional: create your own white-reference profile
 
-## 可选：重新标定
-
-放好白纸，ROI 按 960×540 输出填写，避开阴影、反光和边缘：
+Place white paper under your working light. Set the ROI in **960×540 output coordinates**, avoiding shadows, glare, and paper edges:
 
 ```bash
 python3 imx219.py --wb indoor --ev -0.7 --headless --frames 180 \
@@ -32,22 +37,22 @@ python3 imx219.py --wb indoor --ev -0.7 --headless --frames 180 \
 python3 imx219.py --white-profile my-white.json
 ```
 
-预热 60 帧，取最后 30 帧通道中位值，以 `G/B、1、G/R` 求 BGR 增益。过曝或太暗时拒绝保存；用白纸另一块区域验证。
+The script warms up for 60 frames, then uses the last 30 reference samples to calculate BGR gains as `G/B, 1, G/R`. It rejects dark or clipped references. Check a separate area of the paper afterward.
 
-## 曝光和增益
+## Exposure and gain
 
 ```bash
-# 固定 20 ms、模拟增益 1.5x、ISP 数字增益 1x
+# Fixed 20 ms exposure, 1.5x analog gain, 1x ISP digital gain
 python3 imx219.py --raw-color --shutter-us 20000 --gain 1.5 --isp-gain 1
-# 自动曝光，上限 5 ms；模拟增益上限 4x
+# Automatic exposure capped at 5 ms, analog gain capped at 4x
 python3 imx219.py --raw-color --max-exposure-us 5000 --max-gain 4 --isp-gain 1
 ```
 
-快门参数单位为微秒，传给 Argus 时转成纳秒。以上是用法示例，需按光照和运动调整。[Waveshare 手册](https://www.waveshare.com/wiki/Pi5-IMX219)的 libcamera 参数不能直接照搬到 Jetson。旧 Nano 教程的 `camera_overrides.isp` 在本机出现不兼容字段，因此未采用。
+Shutter arguments use microseconds, converted to nanoseconds for Argus. These are usage examples; adjust for light and motion. The libcamera commands in the [Waveshare manual](https://www.waveshare.com/wiki/Pi5-IMX219) are not directly interchangeable with Jetson commands. The old Nano `camera_overrides.isp` produced unsupported-field errors on this system and was not adopted.
 
-## 没有 /dev/video0 时
+## If `/dev/video0` is missing
 
-`enable_imx219.py` 仅合并本机 IMX219-A 相机 overlay，检查 sensor → NVCSI → VI 链路，不配置其他外设：
+`enable_imx219.py` merges the installed NVIDIA IMX219-A overlay and validates the sensor → NVCSI → VI links. It does not configure other peripherals.
 
 ```bash
 sudo apt install device-tree-compiler v4l-utils
@@ -56,6 +61,10 @@ sudo install -m 644 build/imx219-local.dtb /boot/dtb/imx219-local.dtb
 sudo cp /boot/extlinux/extlinux.conf /boot/extlinux/extlinux.conf.imx219-backup
 ```
 
-编辑 extlinux.conf：复制当前启动项，保留 LINUX、INITRD、APPEND，新项设置 `FDT /boot/dtb/imx219-local.dtb`，DEFAULT 指向新项；保留旧项以便回退。已有自定义 FDT/overlay 时先合并原配置，不能直接替换。重启后检查 `v4l2-ctl --list-devices`。
+Edit `extlinux.conf`: duplicate the current boot entry, preserving its LINUX, INITRD, and APPEND lines. Give the new entry a unique label, set `FDT /boot/dtb/imx219-local.dtb`, and point DEFAULT to that label. Keep the original entry for recovery. If you already use a custom FDT or overlays, merge those settings first instead of replacing them. Reboot and check `v4l2-ctl --list-devices`.
 
-相机单独 DTB 通过离线检查；此前出图在含其他载板设置的 DTB 上验证。源码 MIT；NVIDIA 驱动、DTB/DTBO、NITO 不随仓库分发，沿用 BSP 原许可。
+The camera-only DTB passed offline checks; successful capture was previously tested with a DTB containing additional carrier settings. CLI capture and the corrected-frame API each passed a 90-frame capture check.
+
+## License
+
+Original code is MIT licensed. NVIDIA drivers, DTB/DTBO files, and NITO are not redistributed; their BSP licenses apply.
