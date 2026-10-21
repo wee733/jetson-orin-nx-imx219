@@ -1,0 +1,15 @@
+# Generated / device-specific files; never commit local boot configs or captures.
+build*/
+captures/
+local/
+*.dtb
+*.dtbo
+*.jpg
+*.jpeg
+*.png
+*.raw
+*.log
+*-timing.json
+__pycache__/
+*.pyc
+.venv/
