@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""IMX219 capture with the bundled indoor white-paper correction; --raw-color disables it."""
+"""IMX219 capture with native ISP color; apply a post-ISP LUT only on request."""
 import argparse,time,json
 from pathlib import Path
 import cv2
@@ -32,17 +32,20 @@ def camera_pipeline(wb,ev,extra=''):
  'nvvidconv ! video/x-raw,width=960,height=540,format=BGRx ! '
  'videoconvert ! video/x-raw,format=BGR ! appsink max-buffers=1 drop=true sync=false')
 
+def load_profile(path):
+ profile=json.loads(Path(path).read_text())
+ if profile.get('output_resolution')!=[960,540]:raise ValueError('Profile resolution must be 960x540')
+ gains=np.asarray(profile['gains_bgr'],np.float32)
+ if gains.shape!=(3,) or not np.isfinite(gains).all() or not ((gains>=0.25)&(gains<=4)).all():raise ValueError('Invalid gains')
+ lut=np.clip(np.arange(256,dtype=np.float32)[:,None]*gains[None,:],0,255).round().astype(np.uint8).reshape(256,1,3)
+ return profile,lut
+
 class IMX219:
- """read() returns the corrected 960x540 BGR image, using our profile by default."""
+ """read() returns native ISP color (960x540 BGR) unless given a white profile."""
  def __init__(self, profile_path=None):
-  path=Path(profile_path) if profile_path else Path(__file__).with_name('white_balance.json')
-  profile=json.loads(path.read_text())
-  if profile.get('output_resolution')!=[960,540]:raise ValueError('Profile resolution must be 960x540')
-  gains=np.asarray(profile['gains_bgr'],np.float32)
-  if gains.shape!=(3,) or not np.isfinite(gains).all() or not ((gains>=0.25)&(gains<=4)).all():raise ValueError('Invalid gains')
-  self.lut=np.clip(np.arange(256,dtype=np.float32)[:,None]*gains[None,:],0,255).round().astype(np.uint8).reshape(256,1,3)
-  wb={'auto':1,'indoor':2,'daylight':5}[profile['wb_preset']]
-  ev=float(profile['exposure_compensation_ev'])
+  profile,self.lut=load_profile(profile_path) if profile_path is not None else ({},None)
+  wb={'auto':1,'indoor':2,'daylight':5}[profile.get('wb_preset','auto')]
+  ev=float(profile.get('exposure_compensation_ev',0.0))
   if not np.isfinite(ev) or not -2<=ev<=2:raise ValueError('Invalid exposure compensation')
   self.pipeline=camera_pipeline(wb,ev,control_properties(profile.get('capture_controls',{})))
   self.cap=cv2.VideoCapture(self.pipeline,cv2.CAP_GSTREAMER)
@@ -52,7 +55,7 @@ class IMX219:
  def read(self):
   ok,frame=self.cap.read()
   if not ok:return False,None
-  return True,cv2.LUT(frame,self.lut)
+  return True,frame if self.lut is None else cv2.LUT(frame,self.lut)
  def release(self):
   self.cap.release()
  def __enter__(self):
@@ -71,8 +74,8 @@ def main():
  p.add_argument('--headless',action='store_true')
  p.add_argument('--frames',type=int,default=0,help='0: run until Q or Ctrl-C')
  p.add_argument('--save',type=Path)
- p.add_argument('--white-profile',type=Path,help='White balance JSON; defaults to bundled white_balance.json')
- p.add_argument('--raw-color',action='store_true',help='Disable the application LUT and use auto WB unless --wb is set')
+ p.add_argument('--white-profile',type=Path,help='Opt in to a post-ISP white-reference LUT')
+ p.add_argument('--raw-color',action='store_true',help='Native ISP color (default), no application LUT')
  p.add_argument('--calibrate-white',type=Path,help='Save a white-reference profile after convergence')
  p.add_argument('--ev',type=float,help='Exposure compensation in stops; defaults to saved profile or 0')
  p.add_argument('--roi',type=int,nargs=4,default=[480,180,640,320],metavar=('X0','Y0','X1','Y1'))
@@ -81,18 +84,12 @@ def main():
  if a.calibrate_white and a.white_profile: p.error('Use calibration or correction, not both')
  if a.calibrate_white and a.frames and a.frames<90: p.error('Calibration needs at least 90 frames')
  if a.raw_color and a.white_profile:p.error('Choose --raw-color or --white-profile')
- if not a.calibrate_white and not a.raw_color and a.white_profile is None:
-  a.white_profile=Path(__file__).with_name('white_balance.json')
  profile=None;lut=None;correction_ms=deque(maxlen=300);reference=deque(maxlen=30);reference_clipping=deque(maxlen=30)
  if a.white_profile:
-  profile=json.loads(a.white_profile.read_text())
-  if profile.get('output_resolution')!=[960,540]:raise SystemExit('Profile output resolution differs from 960x540')
+  profile,lut=load_profile(a.white_profile)
   if a.wb is None:a.wb=profile['wb_preset']
   if profile['wb_preset']!=a.wb:raise SystemExit('White profile requires --wb '+profile['wb_preset'])
-  gains=np.asarray(profile['gains_bgr'],np.float32)
-  if gains.shape!=(3,) or not np.isfinite(gains).all() or not ((gains>=0.25)&(gains<=4)).all():raise SystemExit('Invalid white profile gains')
-  lut=np.clip(np.arange(256,dtype=np.float32)[:,None]*gains[None,:],0,255).round().astype(np.uint8).reshape(256,1,3)
- if a.wb is None:a.wb='indoor' if a.calibrate_white else 'auto'
+ if a.wb is None:a.wb='auto'
  ev=a.ev if a.ev is not None else (profile.get('exposure_compensation_ev',0.0) if profile else 0.0)
  if not -2<=ev<=2:raise SystemExit('Exposure compensation must be between -2 and 2')
  controls={k:getattr(a,k) for k in ('shutter_us','max_exposure_us','gain','max_gain','isp_gain') if getattr(a,k) is not None}

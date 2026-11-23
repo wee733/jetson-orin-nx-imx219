@@ -1,70 +1,60 @@
-# Jetson Orin NX + Waveshare IMX219
+# Jetson Orin NX + Waveshare IMX219-77 (79.3°)
 
 **English** | [简体中文](README.zh-CN.md)
 
-Enable IMX219 capture and apply the measured correction for a purple color cast. **The bundled correction is enabled by default; calibration is optional.**
+CSI0, P3768/P3767-0000, Ubuntu 24.04. The DT tool accepts L4T R39.2.1 and R39.2.2; an accepted revision is not proof that a particular carrier or tuning is correct. The original capture was on R39.2.1. CONFIG override loading and capture were checked on R39.2.2.
 
-Tested on Orin NX 16GB, Ubuntu 24.04 / JetPack 7.2.1 / L4T R39.2.1, Waveshare **Pi5-IMX219-77 (79.3°)**, and a CSI0 connection. Uses the installed `nv_imx219` driver and original NITO.
+## Correct the optics in Argus, before RGB conversion or NVENC
 
-## Capture with color correction
+The RBP194 tuning is for the Pi V2 lens. Loading its shading tables with different optics can amplify red at the edges. Do not install the 2018 Nano tuning wholesale: it contains ISP4-only keys and lacks the v4 AWB mapping. A selected NITO (as in the earlier R39.2.1 setup) or stale nvcam caches can mask a text override. The presence of `imx219.nito` alone does **not** establish which mode is active.
 
-Requires system OpenCV with GStreamer support and NumPy. Run from the repository directory:
+On the Jetson, supply the actual IMX219-77 calibration; do not substitute tables from another lens. The default vendor input is `/home/nvidia/workspaces/damiao-bringup/waveshare-isp/camera_overrides.isp`. The script extracts RBP194 from the installed `libnvodm_imager.so`, imports only matching optical keys, keeps three complete shading grids and updates the v4 gray-line mapping. Preview to a **new** file without root:
 
 ```bash
-python3 imx219.py
-python3 imx219.py --headless --frames 180 --save corrected.jpg
-python3 imx219.py --raw-color  # Compare without the LUT, using auto white balance
+python3 install_isp_override.py --waveshare /path/to/waveshare/camera_overrides.isp --output build/camera_overrides.isp
 ```
 
-Preview, saved images, and the Python API all apply `white_balance.json`.
-
-| Setting | Measured indoor profile |
-|---|---|
-| White balance | Argus `wbmode=2` (incandescent), named `indoor` in this script |
-| Exposure compensation | `-0.7 EV`; shutter and gain remain automatic |
-| BGR gains | `[0.8691588785, 1, 1.1772151899]` |
-| Sensor input / application output | 1920×1080 at 30 fps / 960×540 BGR |
-
-The correction is a per-channel LUT applied after the ISP. It reproduces our indoor white-reference adjustment, not a universal vendor ISP calibration. Different lighting may need a new profile. Other applications do not inherit this correction.
-
-## Optional: create your own white-reference profile
-
-Place white paper under your working light. Set the ROI in **960×540 output coordinates**, avoiding shadows, glare, and paper edges:
+With the aircraft grounded/disarmed and all camera clients stopped, install in CONFIG mode. This is a **host-wide** override; do not use on a mixed-camera system without validating all sensors.
 
 ```bash
-python3 imx219.py --wb indoor --ev -0.7 --headless --frames 180 \
-  --roi 320 200 440 280 --calibrate-white my-white.json
+sudo python3 -I install_isp_override.py --waveshare /path/to/waveshare/camera_overrides.isp --install
+```
+
+The installer backs up the previous file (or records its absence), installs root:root 0644, clears both nvcam and serial caches, restarts Argus, captures 60 buffers, and checks this daemon invocation for `Found override file` and no `Invalid isp config attribute`. A failed check restores the prior state. It does not edit the service or remove NITO files. To restore the previous configuration (also restarts Argus):
+
+```bash
+sudo python3 -I install_isp_override.py --uninstall
+```
+
+## Capture and verify
+
+Requires system OpenCV with GStreamer and NumPy. The CLI and `IMX219()` now default to native ISP color: auto WB (`wbmode=1`), 0 EV, **no** 8-bit LUT. `--raw-color` is the explicit spelling; it does not mean raw Bayer. The guide outputs 960×540 BGR, not the ROS app's 1280×720 RGB8.
+
+```bash
+python3 imx219.py --headless --frames 180 --max-exposure-us 5000 --save frame.png
+```
+
+Try 5000–8000 µs as an **upper limit**, not a fixed shutter. AE can shorten exposure down to the sensor minimum and vary gain. An upper limit does not create light: short exposures in low light can still be very noisy. Verify on a matte gray/white target under known light and a moving edge; parsing successfully is not an image-quality measurement. `--shutter-us` explicitly fixes exposure and cannot be combined with `--max-exposure-us`.
+
+Optional white-point trim under one light (ROI in output coordinates):
+
+```bash
+python3 imx219.py --headless --frames 180 --max-exposure-us 5000 --roi 320 200 440 280 --calibrate-white my-white.json
 python3 imx219.py --white-profile my-white.json
 ```
 
-The script warms up for 60 frames, then uses the last 30 reference samples to calculate BGR gains as `G/B, 1, G/R`. It rejects dark or clipped references. Check a separate area of the paper afterward.
+The old incandescent/−0.7 EV LUT is available **only** with `--white-profile white_balance.json` or `IMX219('white_balance.json')`. Other Argus clients do not inherit a software profile.
 
-## Exposure and gain
+## Device tree: only if the camera is missing
 
-```bash
-# Fixed 20 ms exposure, 1.5x analog gain, 1x ISP digital gain
-python3 imx219.py --raw-color --shutter-us 20000 --gain 1.5 --isp-gain 1
-# Automatic exposure capped at 5 ms, analog gain capped at 4x
-python3 imx219.py --raw-color --max-exposure-us 5000 --max-gain 4 --isp-gain 1
-```
-
-Shutter arguments use microseconds, converted to nanoseconds for Argus. These are usage examples; adjust for light and motion. The libcamera commands in the [Waveshare manual](https://www.waveshare.com/wiki/Pi5-IMX219) are not directly interchangeable with Jetson commands. The old Nano `camera_overrides.isp` produced unsupported-field errors on this system and was not adopted.
-
-## If `/dev/video0` is missing
-
-`enable_imx219.py` merges the installed NVIDIA IMX219-A overlay and validates the sensor → NVCSI → VI links. It does not configure other peripherals.
+`enable_imx219.py` builds locally with `fdtoverlay` (package `device-tree-compiler`), without writing `/boot`. Pass all required carrier overlays in order: they are applied before IMX219-A. On the Damiao setup the USB overlay refers to `dm_usb*` symbols in **its matching base**. The stock base alone failed with `FDT_ERR_NOTFOUND`: do not omit the carrier overlay to make that error disappear.
 
 ```bash
-sudo apt install device-tree-compiler v4l-utils
-python3 enable_imx219.py
-sudo install -m 644 build/imx219-local.dtb /boot/dtb/imx219-local.dtb
-sudo cp /boot/extlinux/extlinux.conf /boot/extlinux/extlinux.conf.imx219-backup
+python3 enable_imx219.py --base /home/nvidia/workspaces/damiao-bringup/local-base.dtb --extra-overlays /home/nvidia/workspaces/damiao-bringup/damiao-v2-uart-usb3.dtbo --output build-dt-new
 ```
 
-Edit `extlinux.conf`: duplicate the current boot entry, preserving its LINUX, INITRD, and APPEND lines. Give the new entry a unique label, set `FDT /boot/dtb/imx219-local.dtb`, and point DEFAULT to that label. Keep the original entry for recovery. If you already use a custom FDT or overlays, merge those settings first instead of replacing them. Reboot and check `v4l2-ctl --list-devices`.
-
-The camera-only DTB passed offline checks; successful capture was previously tested with a DTB containing additional carrier settings. CLI capture and the corrected-frame API each passed a 90-frame capture check.
+Use a new output directory. For the reference carrier only, omit `--extra-overlays` and use its matching `--base`. `manifest.json` records ordered inputs, SHA256s, graph validation and the output digest. Offline validation is not a UART/USB hardware test. If installing a DTB separately, preserve the existing boot entry and recovery path; this ISP change does not require a DTB flash or reboot.
 
 ## License
 
-Original code is MIT licensed. NVIDIA drivers, DTB/DTBO files, and NITO are not redistributed; their BSP licenses apply.
+Original code: MIT. NVIDIA drivers, DT/DTBO, NITO, and ISP tables are not redistributed. Generate the override from locally supplied inputs under their respective licenses.

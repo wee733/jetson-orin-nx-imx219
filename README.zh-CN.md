@@ -1,63 +1,58 @@
-# Jetson Orin NX + Waveshare IMX219
+# Jetson Orin NX + Waveshare IMX219-77（79.3°）
 
 [English](README.md) | **简体中文**
 
-实测：Orin NX 16GB，Ubuntu 24.04 / JetPack 7.2.1 / L4T R39.2.1，Pi5-IMX219-77（79.3°），CSI0接入。使用系统 `nv_imx219` 驱动和原有 NITO。
+适用 CSI0、P3768/P3767-0000、Ubuntu 24.04。设备树工具识别 L4T R39.2.1 和 R39.2.2，不代表任意载板均已验证。此前在 R39.2.1 上出图；已在 R39.2.2 上验证 CONFIG override 加载和采集。
 
-## 偏紫修正
+## 先在 Argus ISP 中校正镜头，再转换 RGB 或送给 NVENC
 
-使用带 GStreamer 的系统 OpenCV 和 numpy。**不需要先校准**，`imx219.py` 默认加载我们已经实测的 **white_balance.json**，保存的图像同样经过修正：
+RBP194 使用树莓派 V2 镜头的阴影校正表，套在不同光学系统上会放大边缘红光。不要整份安装旧 Nano 标定：ISP4 的部分键在 Orin 上不受支持，且缺少 v4 AWB 映射。R39.2.1 之前的机载设置使用 NITO；选中 NITO 或保留旧的 nvcam 缓存都可能使文本配置不起作用。磁盘上存在 `imx219.nito` **不等于**它正被使用。
+
+在 Jetson 上使用此镜头实际的 Waveshare 校准文件，默认路径 `/home/nvidia/workspaces/damiao-bringup/waveshare-isp/camera_overrides.isp`。脚本从本机 `libnvodm_imager.so` 提取 RBP194，仅导入两者共有的光学键，保留三套完整网格，并将灰线和色温映射同步给 v4。先生成到**不存在**的文件，无需 sudo：
 
 ```bash
-python3 imx219.py
-python3 imx219.py --headless --frames 180 --save corrected.jpg
-python3 imx219.py --raw-color  # 关闭 LUT，自动白平衡，对照原图
+python3 install_isp_override.py --output build/camera_overrides.isp
 ```
 
-| 参数 | 本机第二次白纸标定结果 |
-|---|---|
-| 白平衡 | `wbmode=2` 白炽灯，脚本选项为 `indoor` |
-| 曝光补偿 | `-0.7 EV`，快门/增益仍自动 |
-| BGR 增益 | `[0.8691588785, 1, 1.1772151899]` |
-| 输入 / 输出 | 1920×1080@30 / BGR 960×540 |
-
-修正采用 ISP 输出后的逐通道 LUT，只在本程序中生效。这是当时室内光照的白点修正，不是厂家通用 ISP；换光源后重新标定。
-
-
-## 可选：重新标定
-
-放好白纸，ROI 按 960×540 输出填写，避开阴影、反光和边缘：
+文件不在默认位置时，用 `--waveshare 路径` 指定。确认飞行器落地未解锁，退出所有相机客户端，以 CONFIG 模式安装。这是**整台主机**的 override，多相机系统需验证所有受影响设备。
 
 ```bash
-python3 imx219.py --wb indoor --ev -0.7 --headless --frames 180 \
-  --roi 320 200 440 280 --calibrate-white my-white.json
+sudo python3 -I install_isp_override.py --install
+```
+
+脚本保存旧文件或「原先无文件」状态，安装为 root:root 0644，清除 nvcam 与 serial 两类缓存，重启 Argus，采集 60 帧，检查**本次服务实例**有 `Found override file` 且无 `Invalid isp config attribute`。验证失败会回退；脚本不删除 NITO，也不修改服务的环境变量。卸载并恢复（同样会重启 Argus）：
+
+```bash
+sudo python3 -I install_isp_override.py --uninstall
+```
+
+## 实拍和验收
+
+需要带 GStreamer 的系统 OpenCV 和 NumPy。CLI 和 `IMX219()` 默认使用原生 ISP 色彩：自动白平衡（`wbmode=1`）、0 EV、不加载 8-bit LUT。`--raw-color` 与默认行为相同，并非输出 Bayer。此工具给出 960×540 BGR；机载 ROS app 的原图是 1280×720 RGB8。
+
+```bash
+python3 imx219.py --headless --frames 180 --max-exposure-us 5000 --save frame.png
+```
+
+建议先试 5000–8000 µs **上限**。它与固定快门 `--shutter-us` 互斥；AE 可以缩短快门、自动调整增益。较短上限不能增加进光量：暗处仍会有彩噪。请在已知照明下用中性灰/白板检查中心与四角，再用运动边缘检查拖影。日志没有非法属性，不代表画质已验收。
+
+仅针对特定光源需要微调时，放置不反光的白纸，按输出坐标选择 ROI：
+
+```bash
+python3 imx219.py --headless --frames 180 --max-exposure-us 5000 --roi 320 200 440 280 --calibrate-white my-white.json
 python3 imx219.py --white-profile my-white.json
 ```
 
-预热 60 帧，取最后 30 帧通道中位值，以 `G/B、1、G/R` 求 BGR 增益。过曝或太暗时拒绝保存；用白纸另一块区域验证。
+旧的白炽灯、−0.7 EV 配置仅在显式使用 `--white-profile white_balance.json` 或 `IMX219('white_balance.json')` 时启用。应用层 LUT 不影响其他 Argus 客户端。
 
-## 曝光和增益
+## 仅在相机设备缺失时处理设备树
 
-```bash
-# 固定 20 ms、模拟增益 1.5x、ISP 数字增益 1x
-python3 imx219.py --raw-color --shutter-us 20000 --gain 1.5 --isp-gain 1
-# 自动曝光，上限 5 ms；模拟增益上限 4x
-python3 imx219.py --raw-color --max-exposure-us 5000 --max-gain 4 --isp-gain 1
-```
-
-快门参数单位为微秒，传给 Argus 时转成纳秒。以上是用法示例，需按光照和运动调整。[Waveshare 手册](https://www.waveshare.com/wiki/Pi5-IMX219)的 libcamera 参数不能直接照搬到 Jetson。旧 Nano 教程的 `camera_overrides.isp` 在本机出现不兼容字段，因此未采用。
-
-## 没有 /dev/video0 时
-
-`enable_imx219.py` 仅合并本机 IMX219-A 相机 overlay，检查 sensor → NVCSI → VI 链路，不配置其他外设：
+`enable_imx219.py` 使用 `device-tree-compiler` 包的 `fdtoverlay` 在新目录生成文件，不写 `/boot`。先按命令行顺序合并所有额外载板 overlay，再合并 IMX219-A。达妙的 USB overlay 引用 `dm_usb*` 符号，必须配合含这些符号的基底；直接用 stock DTB 会报 `FDT_ERR_NOTFOUND`，不能为绕过错误而丢掉载板 overlay。
 
 ```bash
-sudo apt install device-tree-compiler v4l-utils
-python3 enable_imx219.py
-sudo install -m 644 build/imx219-local.dtb /boot/dtb/imx219-local.dtb
-sudo cp /boot/extlinux/extlinux.conf /boot/extlinux/extlinux.conf.imx219-backup
+python3 enable_imx219.py --base /home/nvidia/workspaces/damiao-bringup/local-base.dtb --extra-overlays /home/nvidia/workspaces/damiao-bringup/damiao-v2-uart-usb3.dtbo --output build-dt-new
 ```
 
-编辑 extlinux.conf：复制当前启动项，保留 LINUX、INITRD、APPEND，新项设置 `FDT /boot/dtb/imx219-local.dtb`，DEFAULT 指向新项；保留旧项以便回退。已有自定义 FDT/overlay 时先合并原配置，不能直接替换。重启后检查 `v4l2-ctl --list-devices`。
+标准参考载板可省略 `--extra-overlays`，但基底仍须匹配。`manifest.json` 记录实际输入顺序、SHA256、相机图链验证和输出摘要。离线验证不等于 UART/USB 通电测试。若另行安装 DTB，保留原启动项以便恢复；本次 ISP 修复不需要刷写 DTB 或重启整机。
 
-相机单独 DTB 通过离线检查；此前出图在含其他载板设置的 DTB 上验证。源码 MIT；NVIDIA 驱动、DTB/DTBO、NITO 不随仓库分发，沿用 BSP 原许可。
+源码 MIT；NVIDIA 驱动、DT/DTBO、NITO 和 ISP 表不随库分发，在本机按各自许可生成。
